@@ -1,0 +1,362 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #1a1a1a;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+    
+    #controls {
+      margin: 10px;
+      padding: 10px;
+      background: #333;
+      border-radius: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      max-width: 600px;
+      justify-content: center;
+    }
+    
+    button {
+      margin: 5px;
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      background: #555;
+      color: white;
+      transition: background 0.3s;
+      min-width: 80px;
+    }
+    
+    button:hover {
+      background: #666;
+    }
+    
+    button.active {
+      background: #4CAF50;
+    }
+    
+    #canvas {
+      border: 2px solid #333;
+      cursor: crosshair;
+    }
+
+    #info {
+      margin: 10px;
+      color: #aaa;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <button id="empty">Eraser</button>
+    <button id="wall">Wall</button>
+    <button id="sand">Sand</button>
+    <button id="water">Water</button>
+    <button id="stone">Stone</button>
+    <button id="ice">Ice</button>
+    <button id="gas">Gas</button>
+    <button id="cloner">Cloner</button>
+    <button id="mite">Mite</button>
+    <button id="wood">Wood</button>
+    <button id="plant">Plant</button>
+    <button id="fungus">Fungus</button>
+    <button id="seed">Seed</button>
+    <button id="fire">Fire</button>
+    <button id="lava">Lava</button>
+    <button id="acid">Acid</button>
+    <button id="dust">Dust</button>
+    <button id="oil">Oil</button>
+    <button id="wind">Wind</button>
+    <button id="clear">Clear</button>
+  </div>
+  <canvas id="canvas"></canvas>
+  <div id="info">Click and drag to draw. Elements interact with each other!</div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    canvas.width = 500;
+    canvas.height = 500;
+    
+    const gridSize = 4;  // Increased grid size for better stacking
+    const cols = canvas.width / gridSize;
+    const rows = canvas.height / gridSize;
+    let grid = new Array(cols * rows).fill(null);
+    
+    const TYPES = {
+      EMPTY: { color: '#000000', density: 0, name: 'empty' },
+      WALL: { color: '#666666', density: Infinity, name: 'wall' },
+      SAND: { color: '#e3be7a', density: 2, name: 'sand' },
+      WATER: { color: '#4ba3c3', density: 1, name: 'water' },
+      STONE: { color: '#808080', density: 3, name: 'stone' },
+      ICE: { color: '#a5f2f3', density: 0.9, name: 'ice', melt: true },
+      GAS: { color: '#c8e6c9', density: -1, name: 'gas', disperse: true },
+      CLONER: { color: '#9c27b0', density: Infinity, name: 'cloner', clone: true },
+      MITE: { color: '#ff9800', density: 1, name: 'mite', alive: true },
+      WOOD: { color: '#795548', density: 0.5, name: 'wood', flammable: true },
+      PLANT: { color: '#4caf50', density: 0.6, name: 'plant', grow: true },
+      FUNGUS: { color: '#8d6e63', density: 0.4, name: 'fungus', spread: true },
+      SEED: { color: '#8bc34a', density: 1.5, name: 'seed', germinate: true },
+      FIRE: { color: '#ff5722', density: -0.5, name: 'fire', burn: true },
+      LAVA: { color: '#ff3d00', density: 2.5, name: 'lava', burn: true },
+      ACID: { color: '#cddc39', density: 1.2, name: 'acid', dissolve: true },
+      DUST: { color: '#bdbdbd', density: 0.3, name: 'dust', float: true },
+      OIL: { color: '#3e2723', density: 0.8, name: 'oil', flammable: true },
+      WIND: { color: '#b3e5fc', density: -2, name: 'wind', push: true }
+    };
+    
+    let currentType = TYPES.SAND;
+    let isDrawing = false;
+    let lastDrawPos = null;
+    
+    Object.entries(TYPES).forEach(([key, type]) => {
+      const button = document.getElementById(key.toLowerCase());
+      if (button) {
+        button.addEventListener('click', () => currentType = type);
+      }
+    });
+
+    document.getElementById('clear').addEventListener('click', () => {
+      grid = new Array(cols * rows).fill(null);
+      drawGrid();
+    });
+    
+    canvas.addEventListener('mousedown', startDrawing);
+    canvas.addEventListener('mousemove', draw);
+    canvas.addEventListener('mouseup', stopDrawing);
+    canvas.addEventListener('mouseleave', stopDrawing);
+    
+    function startDrawing(e) {
+      isDrawing = true;
+      lastDrawPos = null;
+      draw(e);
+    }
+    
+    function stopDrawing() {
+      isDrawing = false;
+      lastDrawPos = null;
+    }
+    
+    function interpolatePoints(x1, y1, x2, y2) {
+      const points = [];
+      const dx = Math.abs(x2 - x1);
+      const dy = Math.abs(y2 - y1);
+      const sx = x1 < x2 ? 1 : -1;
+      const sy = y1 < y2 ? 1 : -1;
+      let err = dx - dy;
+      
+      while (true) {
+        points.push({x: x1, y: y1});
+        if (x1 === x2 && y1 === y2) break;
+        const e2 = 2 * err;
+        if (e2 > -dy) {
+          err -= dy;
+          x1 += sx;
+        }
+        if (e2 < dx) {
+          err += dx;
+          y1 += sy;
+        }
+      }
+      return points;
+    }
+    
+    function draw(e) {
+      if (!isDrawing) return;
+      
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.floor((e.clientX - rect.left) / gridSize);
+      const y = Math.floor((e.clientY - rect.top) / gridSize);
+      
+      if (x >= 0 && x < cols && y >= 0 && y < rows) {
+        // Interpolate between last and current position for smooth drawing
+        if (lastDrawPos) {
+          const points = interpolatePoints(lastDrawPos.x, lastDrawPos.y, x, y);
+          points.forEach(point => {
+            placePencilStroke(point.x, point.y);
+          });
+        } else {
+          placePencilStroke(x, y);
+        }
+        lastDrawPos = {x, y};
+      }
+    }
+    
+    function placePencilStroke(x, y) {
+      // Draw in a smaller radius for more precise placement
+      for (let dx = -0; dx <= 0; dx++) {
+        for (let dy = -0; dy <= 0; dy++) {
+          const newX = x + dx;
+          const newY = y + dy;
+          if (newX >= 0 && newX < cols && newY >= 0 && newY < rows) {
+            if (Math.random() < 0.9) { // Higher chance to create particle
+              grid[newY * cols + newX] = currentType === TYPES.EMPTY ? null : { type: currentType, age: 0 };
+            }
+          }
+        }
+      }
+    }
+    
+    function drawGrid() {
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      for (let i = 0; i < grid.length; i++) {
+        const particle = grid[i];
+        if (particle) {
+          const x = (i % cols) * gridSize;
+          const y = Math.floor(i / cols) * gridSize;
+          
+          if (particle.type.burn) {
+            ctx.fillStyle = `hsl(${Math.random() * 30 + 10}, 100%, ${Math.random() * 30 + 50}%)`;
+          } else if (particle.type.alive) {
+            ctx.fillStyle = `hsl(${(particle.age || 0) % 360}, 70%, 50%)`;
+          } else {
+            ctx.fillStyle = particle.type.color;
+          }
+          
+          ctx.fillRect(x, y, gridSize - 1, gridSize - 1); // Small gap between particles
+        }
+      }
+    }
+    
+    function updateGrid() {
+      const newGrid = [...grid];
+      
+      for (let i = grid.length - 1; i >= 0; i--) {
+        const particle = grid[i];
+        if (!particle) continue;
+        
+        const x = i % cols;
+        const y = Math.floor(i / cols);
+        
+        if (particle.type.density === Infinity && !particle.type.clone) continue;
+        
+        if (particle.age !== undefined) {
+          particle.age++;
+        }
+        
+        // Special behaviors (fire, acid, etc.)
+        if (particle.type.burn) {
+          if (Math.random() < 0.05) {
+            newGrid[i] = null;
+            continue;
+          }
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              const newI = i + dy * cols + dx;
+              if (newI >= 0 && newI < grid.length && grid[newI]?.type.flammable) {
+                newGrid[newI] = { type: TYPES.FIRE, age: 0 };
+              }
+            }
+          }
+        }
+        
+        if (particle.type.dissolve) {
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              const newI = i + dy * cols + dx;
+              if (newI >= 0 && newI < grid.length && grid[newI] && grid[newI].type !== TYPES.ACID) {
+                if (Math.random() < 0.05) {
+                  newGrid[newI] = null;
+                }
+              }
+            }
+          }
+        }
+        
+        // Modified movement physics for better stacking
+        if (y < rows - 1) {
+          const below = grid[i + cols];
+          const belowLeft = x > 0 ? grid[i + cols - 1] : true;
+          const belowRight = x < cols - 1 ? grid[i + cols + 1] : true;
+          
+          if (!below && particle.type.density > 0) {
+            // Fall straight down
+            newGrid[i] = null;
+            newGrid[i + cols] = particle;
+          } else if (below && particle.type.density < below.type.density) {
+            // Float upward
+            newGrid[i] = below;
+            newGrid[i + cols] = particle;
+          } else if (particle.type.density > 0 && below) {
+            // Try to slide down sides
+            if (!belowLeft && x > 0) {
+              newGrid[i] = null;
+              newGrid[i + cols - 1] = particle;
+            } else if (!belowRight && x < cols - 1) {
+              newGrid[i] = null;
+              newGrid[i + cols + 1] = particle;
+            }
+          }
+          
+          // Liquid spread
+          if (particle.type.density <= 1 && particle.type.density > 0) {
+            const left = x > 0 ? grid[i - 1] : true;
+            const right = x < cols - 1 ? grid[i + 1] : true;
+            if (!left && Math.random() < 0.5) {
+              newGrid[i] = null;
+              newGrid[i - 1] = particle;
+            } else if (!right && Math.random() < 0.5) {
+              newGrid[i] = null;
+              newGrid[i + 1] = particle;
+            }
+          }
+        }
+        
+        // Upward movement for gases
+        if (particle.type.density < 0 && y > 0) {
+          const above = grid[i - cols];
+          if (!above) {
+            newGrid[i] = null;
+            newGrid[i - cols] = particle;
+          } else {
+            // Gas spread
+            const left = x > 0 ? grid[i - 1] : true;
+            const right = x < cols - 1 ? grid[i + 1] : true;
+            if (!left && Math.random() < 0.3) {
+              newGrid[i] = null;
+              newGrid[i - 1] = particle;
+            } else if (!right && Math.random() < 0.3) {
+              newGrid[i] = null;
+              newGrid[i + 1] = particle;
+            }
+          }
+        }
+      }
+      
+      grid = newGrid;
+    }
+    
+    function animate() {
+      updateGrid();
+      drawGrid();
+      requestAnimationFrame(animate);
+    }
+    
+    const buttons = document.querySelectorAll('button');
+    buttons.forEach(button => {
+      button.addEventListener('click', () => {
+        buttons.forEach(b => b.classList.remove('active'));
+        if (button.id !== 'clear') {
+          button.classList.add('active');
+        }
+      });
+    });
+    
+    document.getElementById('sand').classList.add('active');
+    animate();
+  </script>
+</body>
+</html>
